@@ -1,95 +1,87 @@
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives.padding import PKCS7
-from cryptography.hazmat.backends import default_backend
+from itertools import cycle
+import string
 
-def try_decrypt(encrypted_content, key, debug=False):
-    """
-    Attempt to decrypt the content with a given key
-    Returns the decrypted text if successful, None if failed
-    """
+def xor_bytes(data: bytes, key: bytes) -> bytes:
+    """XOR data with a repeating key."""
+    return bytes(a ^ b for a, b in zip(data, cycle(key)))
+
+def is_printable_ascii(text: bytes) -> bool:
+    """Check if decrypted text is valid printable ASCII."""
     try:
-        iv = encrypted_content[:16]
-        ciphertext = encrypted_content[16:]
+        decoded = text.decode('ascii')
+        return all(c in string.printable for c in decoded)
+    except:
+        return False
+
+def get_possible_keys(encrypted_data: bytes, known_prefix: bytes, key_length: int = 15) -> list:
+    """Generate possible keys based on known plaintext prefix."""
+    # Get the initial part of the key from known prefix
+    initial_key = bytes(a ^ b for a, b in zip(encrypted_data[:len(known_prefix)], known_prefix))
+    
+    # Pad or truncate to exact key length
+    if len(initial_key) < key_length:
+        # Try different padding options
+        possible_keys = []
+        # Try padding with common characters
+        for pad_char in b'0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ':
+            padded_key = initial_key + bytes([pad_char] * (key_length - len(initial_key)))
+            possible_keys.append(padded_key)
+        return possible_keys
+    else:
+        return [initial_key[:key_length]]
+
+def try_decrypt_file(filename: str):
+    """Attempt to decrypt the file with various key possibilities."""
+    # Read encrypted data
+    with open(filename, 'rb') as f:
+        encrypted_data = f.read()
+    
+    known_prefix = b"Challenge 1.2"
+    possible_keys = get_possible_keys(encrypted_data, known_prefix)
+    
+    best_decryption = None
+    best_key = None
+    best_printable_ratio = 0
+    
+    for key in possible_keys:
+        decrypted = xor_bytes(encrypted_data, key)
         
-        # Add padding to make ciphertext length multiple of 16
-        remainder = len(ciphertext) % 16
-        if remainder != 0:
-            padding_length = 16 - remainder
-            ciphertext = ciphertext + (b'\x00' * padding_length)
-        
-        if debug:
-            print(f"Key length: {len(key)} bytes")
-            print(f"Key (hex): {key.hex()}")
-            print(f"Key (ascii): {key.decode('ascii', errors='replace')}")
-        
-        cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
-        decryptor = cipher.decryptor()
-        decrypted_padded = decryptor.update(ciphertext) + decryptor.finalize()
-        
+        if decrypted.startswith(known_prefix):
+            # Calculate ratio of printable characters
+            try:
+                decoded = decrypted.decode('ascii')
+                printable_ratio = sum(c in string.printable for c in decoded) / len(decoded)
+                
+                if printable_ratio > best_printable_ratio:
+                    best_printable_ratio = printable_ratio
+                    best_decryption = decrypted
+                    best_key = key
+            except:
+                continue
+    
+    if best_decryption:
+        print("Successfully decrypted!")
+        print("\nDecrypted text:")
         try:
-            unpadder = PKCS7(algorithms.AES.block_size).unpadder()
-            decrypted = unpadder.update(decrypted_padded) + unpadder.finalize()
-        except ValueError:
-            decrypted = decrypted_padded
-        
-        try:
-            decoded = decrypted.decode('ascii', errors='replace')
-            if "Challenge 1.2" in decoded[:20]:
-                return decoded
-            elif debug:
-                print(f"Decrypted start: {decoded[:50]}")
+            print(best_decryption.decode('ascii'))
         except UnicodeDecodeError:
-            if debug:
-                print("Failed to decode as ASCII")
-        return None
-    except Exception as e:
-        if debug:
-            print(f"Decryption error: {e}")
-        return None
-
-# Read the encrypted file
-file_path = "C:/Users/frog2/IOT/INTSEC/Challenge-1.2.enc"
-
-with open(file_path, "rb") as file:
-    encrypted_content = file.read()
-
-def try_keys():
-    # Try variations of Challenge1.2 to reach exactly 15 bytes
-    base_patterns = [
-        "Challenge1dot2",    # 13 bytes
-        "Challenge1.2xxx",   # Fill with x
-        "Challenge1.2key",   # Common pattern
-        "Challenge1.2CTF",   # CTF style
-        "Challenge1.2IOT",   # Course related
-        "Challenge1.2INT",   # Course related
-        "Challenge12KEY15",  # Another format
-        "Chall1.2Crypto1",  # Crypto reference
-        "Challenge1.2SEC"    # Security reference
-    ]
-    
-    for pattern in base_patterns:
-        # Ensure pattern is exactly 15 bytes
-        if len(pattern) > 15:
-            pattern = pattern[:15]
-        elif len(pattern) < 15:
-            pattern = pattern + 'X' * (15 - len(pattern))
-            
-        key = pattern.encode('ascii') + b'\x00'  # Add null byte for 16-byte AES key
+            print("Warning: Could not decode as ASCII. Showing raw bytes:")
+            print(best_decryption)
         
-        print(f"\nTrying key: {pattern}")
-        result = try_decrypt(encrypted_content, key, debug=True)
-        if result:
-            print("\nSuccess! Found working key!")
-            print("\nDecrypted text:")
-            print(result)
-            return True
-    
-    return False
+        print("\nKey (hex):", best_key.hex())
+        print("Key (bytes):", best_key)
+        print(f"Printable character ratio: {best_printable_ratio:.2%}")
+        
+        # Save the decrypted content
+        with open('decrypted_output.txt', 'wb') as f:
+            f.write(best_decryption)
+    else:
+        print("Could not find a valid decryption.")
 
-# Run the key testing
-if not try_keys():
-    print("\nCould not find the correct key.")
-    print("Should we try:")
-    print("1. Different variations of Challenge1.2?")
-    print("2. Different padding characters?")
-    print("3. All uppercase/lowercase variations?")
+if __name__ == "__main__":
+    try:
+        try_decrypt_file('Challenge-1.2.enc')
+    except FileNotFoundError:
+        print("Error: Could not find the encrypted file.")
+    except Exception as e:
+        print(f"Error occurred: {e}")
